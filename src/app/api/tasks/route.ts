@@ -84,6 +84,7 @@ export async function POST(request: NextRequest) {
     const created_via_voice = Boolean(body.created_via_voice);
     const created_by = String(body.created_by || "Web App").trim();
 
+    let isEstimated = false;
     let deadlineVal: Date | null = null;
     if (body.deadline) {
       deadlineVal = parseDeadlineString(String(body.deadline));
@@ -94,6 +95,9 @@ export async function POST(request: NextRequest) {
       defaultDate.setDate(defaultDate.getDate() + 3);
       defaultDate.setHours(23, 59, 0, 0);
       deadlineVal = defaultDate;
+      isEstimated = true;
+    } else if (body.is_estimated_deadline !== undefined) {
+      isEstimated = Boolean(body.is_estimated_deadline);
     }
 
     const deadlineIso = deadlineVal.toISOString();
@@ -111,6 +115,7 @@ export async function POST(request: NextRequest) {
       status: "pending",
       type: "tugas_kuliah",
       is_archived: false,
+      is_estimated_deadline: isEstimated,
       created_via_voice,
       created_by,
       sender_phone: "",
@@ -133,6 +138,55 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, task: createdTask }, { status: 201 });
   } catch (err) {
     console.error("Failed to create task:", err);
+    return NextResponse.json({ ok: false, error: String(err) }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const body = await request.json();
+    if (!body || typeof body !== "object") {
+      return NextResponse.json({ ok: false, error: "Body JSON tidak valid" }, { status: 400 });
+    }
+
+    const id = String(body.id || "").trim();
+    if (!id) {
+      return NextResponse.json({ ok: false, error: "ID tugas wajib disertakan" }, { status: 400 });
+    }
+
+    const db = getAdminDb();
+    const docRef = db.collection("jadwalku_tasks").doc(id);
+    const snap = await docRef.get();
+    if (!snap.exists) {
+      return NextResponse.json({ ok: false, error: "Tugas tidak ditemukan" }, { status: 404 });
+    }
+
+    const updates: Record<string, unknown> = {
+      updated_at: FieldValue.serverTimestamp(),
+    };
+
+    if (body.deadline !== undefined) {
+      const d = parseDeadlineString(String(body.deadline));
+      if (d) {
+        updates.deadline = d;
+        updates.deadline_date = d.toISOString();
+      }
+    }
+
+    if (body.is_estimated_deadline !== undefined) {
+      updates.is_estimated_deadline = Boolean(body.is_estimated_deadline);
+    }
+
+    if (body.title) updates.title = String(body.title).trim();
+    if (body.course_name) updates.course_name = String(body.course_name).trim();
+    if (body.submission_url) updates.submission_url = String(body.submission_url).trim();
+    if (body.description !== undefined) updates.description = String(body.description).trim();
+
+    await docRef.update(updates);
+
+    return NextResponse.json({ ok: true, id, updates });
+  } catch (err) {
+    console.error("Failed to update task:", err);
     return NextResponse.json({ ok: false, error: String(err) }, { status: 500 });
   }
 }

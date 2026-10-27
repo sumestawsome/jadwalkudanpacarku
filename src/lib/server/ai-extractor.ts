@@ -238,12 +238,15 @@ function parseExtractedJson(rawText: string): ExtractedTask {
   }
 
   const title = parsed.title || parsed.name || "Tugas Kuliah";
+  const rawDeadline = parsed.deadline && parsed.deadline !== "null" ? String(parsed.deadline).trim() : "";
+  const isEstimated = !rawDeadline;
 
   return {
-    course_name: parsed.course_name || "Umum",
+    course_name: (parsed.course_name && String(parsed.course_name).trim()) || "Umum",
     title,
     name: title,
-    deadline: parsed.deadline || "",
+    deadline: rawDeadline,
+    is_estimated_deadline: isEstimated,
     description: parsed.description || "",
     submission_url: parsed.submission_url || "E-Learning",
   };
@@ -261,8 +264,9 @@ export async function saveTaskToFirestore(
 ): Promise<Task> {
   const db = getAdminDb();
 
+  let isEstimated = Boolean(extracted.is_estimated_deadline);
   let deadlineVal: Date | null = null;
-  if (extracted.deadline) {
+  if (extracted.deadline && extracted.deadline !== "null") {
     deadlineVal = parseDeadlineString(extracted.deadline);
   }
 
@@ -271,17 +275,19 @@ export async function saveTaskToFirestore(
     defaultDate.setDate(defaultDate.getDate() + 3);
     defaultDate.setHours(23, 59, 0, 0);
     deadlineVal = defaultDate;
+    isEstimated = true;
   }
 
   const isVoice = rawSourceMessage.includes("Voice Note") || rawSourceMessage.includes("Pesan Suara");
   const taskTitle = extracted.title || extracted.name || "Tugas Kuliah";
+  const courseName = (extracted.course_name && extracted.course_name.trim()) || "Umum";
   const deadlineIso = deadlineVal.toISOString();
 
   const taskData: Omit<Task, "id"> = {
     title: taskTitle,
     name: taskTitle,
-    course_name: extracted.course_name,
-    subject_name: extracted.course_name,
+    course_name: courseName,
+    subject_name: courseName,
     deadline: deadlineVal,
     deadline_date: deadlineIso,
     description: extracted.description || "",
@@ -290,6 +296,7 @@ export async function saveTaskToFirestore(
     status: "pending",
     type: "tugas_kuliah",
     is_archived: false,
+    is_estimated_deadline: isEstimated,
     created_via_voice: isVoice,
     created_by: senderInfo?.senderName || senderInfo?.senderPhone || "WhatsApp Bot",
     sender_phone: senderInfo?.senderPhone || "",
@@ -323,15 +330,23 @@ export function buildFriendlyTaskConfirmationMessage(
     greeting = "Halo " + (senderName || "kalian berdua") + "! ✨";
   }
 
+  const estimatedNote = task.is_estimated_deadline
+    ? [
+        "",
+        "⚠️ *Catatan:* Deadline belum kamu sebutkan, jadi bot pasang perkiraan 3 hari lagi. Bisa kamu sesuaikan kapan saja lewat web ya!",
+      ]
+    : [];
+
   return [
     "✨ *Tugas Kuliah Berhasil Dicatat!* 📝",
     "",
     greeting + " Tugas barumu sudah otomatis tersimpan ke jadwal:",
     "📚 *Mata Kuliah:* " + (task.course_name || "Umum"),
     "📝 *Tugas:* " + (task.title || task.name),
-    "⏰ *Tenggat:* " + deadlineStr,
+    "⏰ *Tenggat:* " + deadlineStr + (task.is_estimated_deadline ? " _(Perkiraan 3 Hari)_" : ""),
     ...(task.description ? ["📌 *Rincian:* " + task.description] : []),
     "🔗 *Tempat Kumpul:* " + (task.lms_url || task.submission_url || "E-Learning"),
+    ...estimatedNote,
     "",
     "Semangat belajarnya ya, jangan lupa dicicil biar gak begadang! 🥰💪",
     "👉 Cek jadwal web: " + appUrl,

@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import type { Task } from "@/types";
 import { getCalendarGrid, isSameDay } from "@/lib/calendar-utils";
 import { getTaskDeadlineDiffDays, getRiskLevelFromTask } from "@/lib/task-risk";
-import { formatIndonesianDate } from "@/lib/date-utils";
+import { formatIndonesianDate, parseDeadlineString } from "@/lib/date-utils";
 import { useTheme } from "@/components/theme/theme-provider";
 import {
   Calendar as CalendarIcon,
@@ -26,6 +26,11 @@ import {
   Sparkles,
   BookOpen,
   Plus,
+  AlertCircle,
+  Edit3,
+  Check,
+  Loader2,
+  X,
 } from "lucide-react";
 import { AddTaskModal } from "@/components/schedule/add-task-modal";
 
@@ -65,11 +70,91 @@ export function ScheduleView({ initialTasks }: Props) {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [mobileTab, setMobileTab] = useState<"tasks" | "calendar">("tasks");
 
+  // Quick edit deadline state
+  const [quickEditTaskId, setQuickEditTaskId] = useState<string | null>(null);
+  const [quickDate, setQuickDate] = useState("");
+  const [quickTime, setQuickTime] = useState("23:59");
+  const [isSavingQuickDate, setIsSavingQuickDate] = useState(false);
+
   const { theme, toggleTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
   const handleTaskCreated = (newTask: Task) => {
     setTasks((prev) => [newTask, ...prev]);
+  };
+
+  const handleStartQuickEdit = (task: Task) => {
+    setQuickEditTaskId(task.id);
+    if (task.deadline_date) {
+      const d = new Date(task.deadline_date);
+      if (!isNaN(d.getTime())) {
+        const utc = d.getTime() + d.getTimezoneOffset() * 60000;
+        const wita = new Date(utc + 3600000 * 8);
+        const yyyy = wita.getFullYear();
+        const mm = String(wita.getMonth() + 1).padStart(2, "0");
+        const dd = String(wita.getDate()).padStart(2, "0");
+        const hh = String(wita.getHours()).padStart(2, "0");
+        const min = String(wita.getMinutes()).padStart(2, "0");
+        setQuickDate(`${yyyy}-${mm}-${dd}`);
+        setQuickTime(`${hh}:${min}`);
+        return;
+      }
+    }
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const yyyy = tomorrow.getFullYear();
+    const mm = String(tomorrow.getMonth() + 1).padStart(2, "0");
+    const dd = String(tomorrow.getDate()).padStart(2, "0");
+    setQuickDate(`${yyyy}-${mm}-${dd}`);
+    setQuickTime("23:59");
+  };
+
+  const setPresetDate = (daysAhead: number, timeStr = "23:59") => {
+    const target = new Date();
+    target.setDate(target.getDate() + daysAhead);
+    const yyyy = target.getFullYear();
+    const mm = String(target.getMonth() + 1).padStart(2, "0");
+    const dd = String(target.getDate()).padStart(2, "0");
+    setQuickDate(`${yyyy}-${mm}-${dd}`);
+    setQuickTime(timeStr);
+  };
+
+  const handleSaveQuickDate = async (taskId: string) => {
+    if (!quickDate) return;
+    setIsSavingQuickDate(true);
+    const newDeadlineStr = `${quickDate} ${quickTime || "23:59"}`;
+    try {
+      const res = await fetch("/api/tasks", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: taskId,
+          deadline: newDeadlineStr,
+          is_estimated_deadline: false,
+        }),
+      });
+      if (res.ok) {
+        const parsed = parseDeadlineString(newDeadlineStr);
+        const isoStr = parsed ? parsed.toISOString() : newDeadlineStr;
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === taskId
+              ? {
+                  ...t,
+                  deadline_date: isoStr,
+                  deadline: parsed || isoStr,
+                  is_estimated_deadline: false,
+                }
+              : t
+          )
+        );
+        setQuickEditTaskId(null);
+      }
+    } catch (err) {
+      console.error("Failed to update task deadline:", err);
+    } finally {
+      setIsSavingQuickDate(false);
+    }
   };
 
   useEffect(() => {
@@ -711,14 +796,118 @@ export function ScheduleView({ initialTasks }: Props) {
 
                       {/* Metadata Row: Deadline & Submission LMS */}
                       <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800/80 grid sm:grid-cols-2 gap-2.5 text-xs">
-                        <div className="space-y-0.5">
-                          <span className="text-zinc-500 font-mono text-[10px] sm:text-[11px] uppercase block">
-                            Waktu Tenggat:
-                          </span>
-                          <div className="flex items-center gap-1.5 font-mono text-zinc-800 dark:text-zinc-200">
-                            <Clock className="size-3.5 text-zinc-400 shrink-0" />
-                            <span>{deadlineStr}</span>
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-zinc-500 font-mono text-[10px] sm:text-[11px] uppercase block">
+                              Waktu Tenggat:
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (quickEditTaskId === task.id) {
+                                  setQuickEditTaskId(null);
+                                } else {
+                                  handleStartQuickEdit(task);
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                              title="Edit cepat tanggal tenggat"
+                            >
+                              <Edit3 className="size-2.5" />
+                              <span>{quickEditTaskId === task.id ? "Batal" : "Ubah Tanggal"}</span>
+                            </button>
                           </div>
+                          <div className="flex items-center gap-1.5 flex-wrap font-mono text-zinc-800 dark:text-zinc-200">
+                            <div className="flex items-center gap-1.5">
+                              <Clock className="size-3.5 text-zinc-400 shrink-0" />
+                              <span>{deadlineStr}</span>
+                            </div>
+                            {task.is_estimated_deadline && (
+                              <span
+                                className="px-1.5 py-0.2 rounded-none text-[10px] font-mono font-bold bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700/80 inline-flex items-center gap-1"
+                                title="Deadline diatur secara otomatis (estimasi 3 hari)"
+                              >
+                                <AlertCircle className="size-2.5" />
+                                <span>Estimasi</span>
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Inline Quick Date Editor */}
+                          {quickEditTaskId === task.id && (
+                            <div className="mt-2 p-2 bg-zinc-50 dark:bg-zinc-950 border border-indigo-200 dark:border-indigo-800/80 rounded-none space-y-2">
+                              <div className="flex items-center justify-between text-[11px] font-bold text-zinc-800 dark:text-zinc-200">
+                                <span>Koreksi Tanggal Tenggat:</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setQuickEditTaskId(null)}
+                                  className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
+                                >
+                                  <X className="size-3" />
+                                </button>
+                              </div>
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <input
+                                  type="date"
+                                  value={quickDate}
+                                  onChange={(e) => setQuickDate(e.target.value)}
+                                  className="h-7 px-2 text-xs bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-none focus:outline-none focus:border-indigo-600 font-mono text-zinc-900 dark:text-zinc-100"
+                                />
+                                <input
+                                  type="time"
+                                  value={quickTime}
+                                  onChange={(e) => setQuickTime(e.target.value)}
+                                  className="h-7 px-2 text-xs bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-none focus:outline-none focus:border-indigo-600 font-mono text-zinc-900 dark:text-zinc-100"
+                                />
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setPresetDate(1, "23:59")}
+                                  className="text-[10px] font-mono px-1.5 py-0.5 border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-none cursor-pointer"
+                                >
+                                  Besok 23:59
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setPresetDate(2, "23:59")}
+                                  className="text-[10px] font-mono px-1.5 py-0.5 border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-none cursor-pointer"
+                                >
+                                  Lusa 23:59
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setPresetDate(1, "19:00")}
+                                  className="text-[10px] font-mono px-1.5 py-0.5 border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-none cursor-pointer"
+                                >
+                                  Besok 19:00
+                                </button>
+                              </div>
+                              <div className="flex justify-end gap-1.5 pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setQuickEditTaskId(null)}
+                                  disabled={isSavingQuickDate}
+                                  className="h-6 px-2 text-[11px] font-semibold rounded-none border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer shadow-none"
+                                >
+                                  Batal
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveQuickDate(task.id)}
+                                  disabled={isSavingQuickDate || !quickDate}
+                                  className="h-6 px-2.5 text-[11px] font-bold rounded-none border border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer shadow-none flex items-center gap-1"
+                                >
+                                  {isSavingQuickDate ? (
+                                    <Loader2 className="size-3 animate-spin" />
+                                  ) : (
+                                    <Check className="size-3" />
+                                  )}
+                                  <span>Simpan</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         <div className="space-y-0.5">

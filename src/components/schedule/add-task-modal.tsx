@@ -30,6 +30,7 @@ export function AddTaskModal({ isOpen, onClose, onTaskCreated }: Props) {
   const [submissionUrl, setSubmissionUrl] = useState("E-Learning");
   const [description, setDescription] = useState("");
   const [createdViaVoice, setCreatedViaVoice] = useState(false);
+  const [isEstimatedDeadline, setIsEstimatedDeadline] = useState(false);
 
   // Recording & Extraction state
   const [isRecording, setIsRecording] = useState(false);
@@ -192,15 +193,30 @@ export function AddTaskModal({ isOpen, onClose, onTaskCreated }: Props) {
       if (extracted.description) setDescription(extracted.description);
       if (extracted.submission_url) setSubmissionUrl(extracted.submission_url);
 
+      const isEst = Boolean(extracted.is_estimated_deadline) || !extracted.deadline;
+      setIsEstimatedDeadline(isEst);
+
       if (extracted.deadline) {
         // Parse YYYY-MM-DD HH:mm
         const parts = extracted.deadline.split(" ");
         if (parts[0]) setDeadlineDate(parts[0]);
         if (parts[1]) setDeadlineTime(parts[1]);
+      } else {
+        const defaultDate = new Date();
+        defaultDate.setDate(defaultDate.getDate() + 3);
+        const yyyy = defaultDate.getFullYear();
+        const mm = String(defaultDate.getMonth() + 1).padStart(2, "0");
+        const dd = String(defaultDate.getDate()).padStart(2, "0");
+        setDeadlineDate(`${yyyy}-${mm}-${dd}`);
+        setDeadlineTime("23:59");
       }
 
       setCreatedViaVoice(true);
-      setExtractSuccess("✨ Gemini Flash berhasil mengekstrak suara! Silakan periksa formulir di bawah.");
+      if (isEst) {
+        setExtractSuccess("✨ Gemini Flash berhasil mengekstrak suara! Catatan: Deadline belum disebutkan, bot memasang estimasi 3 hari lagi.");
+      } else {
+        setExtractSuccess("✨ Gemini Flash berhasil mengekstrak suara! Silakan periksa formulir di bawah.");
+      }
     } catch (err) {
       console.error("Extraction error:", err);
       setExtractError(err instanceof Error ? err.message : "Gagal mengekstrak tugas dari audio.");
@@ -217,6 +233,7 @@ export function AddTaskModal({ isOpen, onClose, onTaskCreated }: Props) {
     const dd = String(target.getDate()).padStart(2, "0");
     setDeadlineDate(`${yyyy}-${mm}-${dd}`);
     setDeadlineTime(timeStr);
+    setIsEstimatedDeadline(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -245,6 +262,7 @@ export function AddTaskModal({ isOpen, onClose, onTaskCreated }: Props) {
           title: cleanTitle,
           course_name: cleanCourse,
           deadline: finalDeadlineStr,
+          is_estimated_deadline: isEstimatedDeadline,
           submission_url: submissionUrl.trim() || "E-Learning",
           description: description.trim(),
           created_via_voice: createdViaVoice,
@@ -265,6 +283,7 @@ export function AddTaskModal({ isOpen, onClose, onTaskCreated }: Props) {
       setDescription("");
       setSubmissionUrl("E-Learning");
       setCreatedViaVoice(false);
+      setIsEstimatedDeadline(false);
     } catch (err) {
       console.error("Submit error:", err);
       setSubmitError(err instanceof Error ? err.message : "Terjadi kesalahan saat menyimpan tugas.");

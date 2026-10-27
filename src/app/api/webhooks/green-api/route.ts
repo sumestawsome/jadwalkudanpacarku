@@ -11,7 +11,7 @@ import {
   isBotSelfEchoMessage,
 } from "@/lib/server/ai-extractor";
 import { getTaskDeadlineDiffDays } from "@/lib/task-risk";
-import { formatIndonesianDate } from "@/lib/date-utils";
+import { formatIndonesianDate, formatWitaDate, parseDeadlineString } from "@/lib/date-utils";
 import type { Task } from "@/types";
 
 export const runtime = "nodejs";
@@ -234,8 +234,126 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // 2. Tangani Perintah Singkat Teks (!jadwal / !tugas / !bantuan)
+  // 2. Tangani Perintah Singkat Teks (!deadline / !jadwal / !tugas / !bantuan)
   const lowerText = textMessage.toLowerCase();
+
+  // Perintah koreksi cepat deadline: !deadline <waktu>
+  if (lowerText.startsWith("!deadline")) {
+    const timeExpression = textMessage.replace(/^!deadline\s*/i, "").trim();
+
+    if (!timeExpression) {
+      const helpDeadlineMsg = [
+        "⚠️ *Format Perintah Koreksi Deadline:*",
+        "Ketik `!deadline <waktu baru>`, contoh:",
+        "• `!deadline besok jam 8 malam`",
+        "• `!deadline jumat 23:59`",
+        "• `!deadline lusa jam 14:00`",
+        "• `!deadline 31 Oktober 2026 23:59`",
+        "",
+        "Perintah ini akan otomatis memperbarui tenggat tugas terakhir yang kamu buat.",
+      ].join("\n");
+      await sendGreenApiTextMessage(rawChatId, helpDeadlineMsg);
+      return NextResponse.json({ status: "success", action: "deadline_help_sent" }, { status: 200 });
+    }
+
+    try {
+      const db = getAdminDb();
+      const querySnap = await db
+        .collection("jadwalku_tasks")
+        .where("is_archived", "==", false)
+        .get();
+
+      const candidateTasks: Task[] = [];
+      querySnap.forEach((doc) => {
+        candidateTasks.push({ id: doc.id, ...(doc.data() as Omit<Task, "id">) });
+      });
+
+      // Filter tugas milik pengirim ini atau di chat ini
+      let matchingTasks = candidateTasks.filter(
+        (t) => t.sender_phone === cleanSender || (t.created_by && t.created_by.includes(cleanSender))
+      );
+
+      if (matchingTasks.length === 0) {
+        matchingTasks = candidateTasks;
+      }
+
+      if (matchingTasks.length === 0) {
+        await sendGreenApiTextMessage(
+          rawChatId,
+          "⚠️ Tidak ada tugas aktif yang ditemukan untuk diperbarui. Buat tugas baru terlebih dahulu ya! ✨"
+        );
+        return NextResponse.json({ status: "no_task_to_update" }, { status: 200 });
+      }
+
+      // Urutkan berdasarkan waktu pembuatan terbaru
+      matchingTasks.sort((a, b) => {
+        const getMs = (val: unknown) => {
+          if (!val) return 0;
+          if (typeof val === "object" && "toMillis" in val && typeof (val as { toMillis: () => number }).toMillis === "function") {
+            return (val as { toMillis: () => number }).toMillis();
+          }
+          if (typeof val === "object" && "toDate" in val && typeof (val as { toDate: () => Date }).toDate === "function") {
+            return (val as { toDate: () => Date }).toDate().getTime();
+          }
+          const d = new Date(val as string | number);
+          return isNaN(d.getTime()) ? 0 : d.getTime();
+        };
+        return getMs(b.created_at) - getMs(a.created_at);
+      });
+
+      const targetTask = matchingTasks[0];
+
+      // Ekstraksi tanggal baru dengan bantuan parser / Gemini
+      let newDeadlineDate: Date | null = parseDeadlineString(timeExpression);
+
+      if (!newDeadlineDate) {
+        const aiExtracted = await extractTaskFromText(`Tugas ini harus dikumpulkan ${timeExpression}`);
+        if (aiExtracted.deadline) {
+          newDeadlineDate = parseDeadlineString(aiExtracted.deadline);
+        }
+      }
+
+      if (!newDeadlineDate) {
+        await sendGreenApiTextMessage(
+          rawChatId,
+          `⚠️ Bot belum dapat mengenali waktu "${timeExpression}". Coba sebutkan hari/tanggal dan jam lebih rinci (misal: \`!deadline besok jam 8 malam\` atau \`!deadline jumat 23:59\`).`
+        );
+        return NextResponse.json({ status: "invalid_time_expression" }, { status: 200 });
+      }
+
+      const newDeadlineIso = newDeadlineDate.toISOString();
+      await db.collection("jadwalku_tasks").doc(targetTask.id).update({
+        deadline: newDeadlineDate,
+        deadline_date: newDeadlineIso,
+        is_estimated_deadline: false,
+        updated_at: FieldValue.serverTimestamp(),
+      });
+
+      const formattedDeadline = formatWitaDate(newDeadlineDate);
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://jadwalku.vercel.app";
+
+      const confirmMsg = [
+        "✅ *Tenggat Tugas Berhasil Diperbarui!* ⏰",
+        "",
+        `📚 *Mata Kuliah:* ${targetTask.course_name || "Umum"}`,
+        `📝 *Tugas:* ${targetTask.title || targetTask.name}`,
+        `⏰ *Tenggat Baru:* ${formattedDeadline}`,
+        "",
+        "Status estimasi telah dimatikan dan jadwalmu sudah terupdate! Semangat belajarnya ya! 🥰💪",
+        `👉 Cek jadwal web: ${appUrl}`,
+      ].join("\n");
+
+      await sendGreenApiTextMessage(rawChatId, confirmMsg);
+      return NextResponse.json({ status: "success", action: "deadline_updated", taskId: targetTask.id }, { status: 200 });
+    } catch (err) {
+      console.error("[jadwalku-webhook] Failed to update deadline:", err);
+      await sendGreenApiTextMessage(
+        rawChatId,
+        "⚠️ Terjadi kesalahan saat memperbarui deadline tugas. Silakan coba lagi sebentar lagi!"
+      );
+      return NextResponse.json({ status: "error", error: String(err) }, { status: 200 });
+    }
+  }
 
   if (lowerText === "!help" || lowerText === "!bantuan") {
     const helpMsg = [
@@ -252,6 +370,7 @@ export async function POST(request: NextRequest) {
       "",
       "📌 *Perintah Cepat:*",
       "• `!jadwal` atau `!tugas` : Cek daftar tugas yang belum selesai",
+      "• `!deadline <waktu>` : Koreksi tenggat tugas terakhir (contoh: `!deadline besok jam 8 malam`)",
       "• `!bantuan` : Tampilkan petunjuk ini",
       "",
       "💻 Akses kalender lengkap & riwayat di Web Jadwalku!",

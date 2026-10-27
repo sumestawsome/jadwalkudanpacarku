@@ -25,6 +25,7 @@ export interface Task {
   priority?: TaskPriority;
   type?: string;
   is_archived?: boolean;
+  is_estimated_deadline?: boolean;
   created_via_voice?: boolean;
   created_by?: string;
   sender_phone?: string;
@@ -40,6 +41,7 @@ export interface ExtractedTask {
   name?: string;
   title?: string;
   deadline?: string;
+  is_estimated_deadline?: boolean;
   description?: string;
   submission_url?: string;
   error?: string;
