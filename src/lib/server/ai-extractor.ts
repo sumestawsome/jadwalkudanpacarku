@@ -8,8 +8,9 @@ export const FETCH_TIMEOUT_MS = 15000;
 
 export const SUPPORTED_GEMINI_MODELS = [
   process.env.GEMINI_MODEL,
+  "gemini-3.8-flash",
+  "gemini-3.5-flash-lite",
   "gemini-2.5-flash",
-  "gemini-1.5-flash",
 ].filter(Boolean) as string[];
 
 export async function fetchWithTimeout(
