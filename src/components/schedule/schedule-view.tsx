@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import type { Task } from "@/types";
+import type { Task, RecurringSchedule } from "@/types";
 import { getCalendarGrid, isSameDay } from "@/lib/calendar-utils";
 import { getTaskDeadlineDiffDays, getRiskLevelFromTask } from "@/lib/task-risk";
 import { formatIndonesianDate, parseDeadlineString } from "@/lib/date-utils";
@@ -31,8 +31,14 @@ import {
   Check,
   Loader2,
   X,
+  Trash2,
+  MapPin,
+  Repeat,
+  Zap,
+  User,
 } from "lucide-react";
 import { AddTaskModal } from "@/components/schedule/add-task-modal";
+import { AddScheduleModal } from "@/components/schedule/add-schedule-modal";
 
 type Props = {
   initialTasks: Task[];
@@ -60,14 +66,19 @@ function getRiskDotClass(level: "none" | "yellow" | "orange" | "red"): string {
 
 export function ScheduleView({ initialTasks }: Props) {
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
+  const [schedules, setSchedules] = useState<RecurringSchedule[]>([]);
+  const [activeMainTab, setActiveMainTab] = useState<"tasks" | "schedules">("tasks");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [scheduleSearchQuery, setScheduleSearchQuery] = useState("");
   const [onlyUrgent, setOnlyUrgent] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isAddScheduleModalOpen, setIsAddScheduleModalOpen] = useState(false);
+  const [deletingScheduleId, setDeletingScheduleId] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<"tasks" | "calendar">("tasks");
 
   // Quick edit deadline state
@@ -79,8 +90,45 @@ export function ScheduleView({ initialTasks }: Props) {
   const { theme, toggleTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
+  const fetchSchedules = async () => {
+    try {
+      const res = await fetch("/api/schedules", { cache: "no-store" });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.ok && Array.isArray(json.schedules)) {
+          setSchedules(json.schedules);
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to fetch schedules:", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchSchedules();
+  }, []);
+
   const handleTaskCreated = (newTask: Task) => {
     setTasks((prev) => [newTask, ...prev]);
+  };
+
+  const handleScheduleCreated = (newSchedule: RecurringSchedule) => {
+    setSchedules((prev) => [...prev, newSchedule]);
+  };
+
+  const handleDeleteSchedule = async (id: string) => {
+    if (!window.confirm("Hapus jadwal rutin ini?")) return;
+    setDeletingScheduleId(id);
+    try {
+      const res = await fetch(`/api/schedules?id=${id}`, { method: "DELETE" });
+      if (res.ok) {
+        setSchedules((prev) => prev.filter((s) => s.id !== id));
+      }
+    } catch (err) {
+      console.error("Failed to delete schedule:", err);
+    } finally {
+      setDeletingScheduleId(null);
+    }
   };
 
   const handleStartQuickEdit = (task: Task) => {
@@ -198,13 +246,20 @@ export function ScheduleView({ initialTasks }: Props) {
   const refreshTasks = async () => {
     setIsRefreshing(true);
     try {
-      const res = await fetch(`/api/tasks?archived=${showArchived ? "true" : "false"}`, {
-        cache: "no-store",
-      });
-      if (res.ok) {
-        const json = await res.json();
+      const [resTasks, resSched] = await Promise.all([
+        fetch(`/api/tasks?archived=${showArchived ? "true" : "false"}`, { cache: "no-store" }),
+        fetch("/api/schedules", { cache: "no-store" }),
+      ]);
+      if (resTasks.ok) {
+        const json = await resTasks.json();
         if (json.ok && Array.isArray(json.tasks)) {
           setTasks(json.tasks);
+        }
+      }
+      if (resSched.ok) {
+        const jsonSched = await resSched.json();
+        if (jsonSched.ok && Array.isArray(jsonSched.schedules)) {
+          setSchedules(jsonSched.schedules);
         }
       }
     } catch (err) {
@@ -282,25 +337,48 @@ export function ScheduleView({ initialTasks }: Props) {
             </div>
           </div>
 
-          {/* Right: + Tambah Tugas + Counter Badge + Refresh + Theme Toggle */}
+          {/* Right: + Tambah (Contextual) + Counter Badge + Refresh + Theme Toggle */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setIsAddModalOpen(true)}
-              className="h-8 px-2.5 sm:px-3 rounded-none border border-indigo-600 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-none shrink-0"
-              title="Tambah tugas baru secara manual atau rekam suara"
-            >
-              <Plus className="size-3.5" />
-              <span className="hidden sm:inline">Tambah Tugas</span>
-              <span className="sm:hidden">Tambah</span>
-            </button>
+            {activeMainTab === "tasks" ? (
+              <button
+                type="button"
+                onClick={() => setIsAddModalOpen(true)}
+                className="h-8 px-2.5 sm:px-3 rounded-none border border-indigo-600 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-none shrink-0"
+                title="Tambah tugas baru secara manual atau rekam suara"
+              >
+                <Plus className="size-3.5" />
+                <span className="hidden sm:inline">Tambah Tugas</span>
+                <span className="sm:hidden">Tugas</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsAddScheduleModalOpen(true)}
+                className="h-8 px-2.5 sm:px-3 rounded-none border border-indigo-600 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-none shrink-0"
+                title="Tambah jadwal rutin / kuliah berulang"
+              >
+                <Plus className="size-3.5" />
+                <span className="hidden sm:inline">Tambah Jadwal</span>
+                <span className="sm:hidden">Jadwal</span>
+              </button>
+            )}
 
             <div className="px-2 sm:px-2.5 py-1 rounded-none border border-amber-500/40 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 text-amber-800 dark:text-amber-400 font-mono text-[11px] sm:text-xs font-bold flex items-center gap-1.5 shadow-none">
               <span className="size-1.5 rounded-none bg-amber-500 dark:bg-amber-400" />
               <span>
-                {activeCount}{" "}
-                <span className="hidden sm:inline">Tugas Aktif</span>
-                <span className="sm:hidden">Tugas</span>
+                {activeMainTab === "tasks" ? (
+                  <>
+                    {activeCount}{" "}
+                    <span className="hidden sm:inline">Tugas Aktif</span>
+                    <span className="sm:hidden">Tugas</span>
+                  </>
+                ) : (
+                  <>
+                    {schedules.length}{" "}
+                    <span className="hidden sm:inline">Jadwal Rutin</span>
+                    <span className="sm:hidden">Jadwal</span>
+                  </>
+                )}
               </span>
             </div>
 
@@ -333,10 +411,49 @@ export function ScheduleView({ initialTasks }: Props) {
         </div>
       </header>
 
+      {/* ── Main Tab Navigation: [Daftar Tugas (N)] | [Jadwal Rutin (M)] ── */}
+      <div className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 sm:px-6">
+        <div className="max-w-7xl mx-auto flex items-center gap-1 sm:gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveMainTab("tasks")}
+            className={`py-2.5 px-3 sm:px-4 text-xs sm:text-sm font-bold border-b-2 flex items-center gap-2 cursor-pointer transition-colors ${
+              activeMainTab === "tasks"
+                ? "border-indigo-600 text-indigo-600 dark:text-indigo-400"
+                : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+            }`}
+          >
+            <BookOpen className="size-3.5 sm:size-4" />
+            <span>Daftar Tugas</span>
+            <span className="font-mono text-[10px] sm:text-xs px-1.5 py-0.2 rounded-none bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700">
+              {activeCount}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveMainTab("schedules")}
+            className={`py-2.5 px-3 sm:px-4 text-xs sm:text-sm font-bold border-b-2 flex items-center gap-2 cursor-pointer transition-colors ${
+              activeMainTab === "schedules"
+                ? "border-indigo-600 text-indigo-600 dark:text-indigo-400"
+                : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+            }`}
+          >
+            <CalendarIcon className="size-3.5 sm:size-4" />
+            <span>Jadwal Rutin</span>
+            <span className="font-mono text-[10px] sm:text-xs px-1.5 py-0.2 rounded-none bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700">
+              {schedules.length}
+            </span>
+          </button>
+        </div>
+      </div>
+
       {/* ── Main Container ── */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 py-3 sm:py-5 space-y-3 sm:space-y-4">
-        {/* ── Filter & Search Toolbar ── */}
-        <div className="border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-2 sm:p-2.5 rounded-none shadow-none flex flex-row items-center gap-2 flex-wrap sm:flex-nowrap">
+        {activeMainTab === "tasks" ? (
+          <>
+            {/* ── Filter & Search Toolbar ── */}
+            <div className="border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-2 sm:p-2.5 rounded-none shadow-none flex flex-row items-center gap-2 flex-wrap sm:flex-nowrap">
           <div className="relative flex-1 min-w-[200px]">
             <Search className="size-3.5 text-zinc-400 dark:text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
             <input
@@ -939,24 +1056,215 @@ export function ScheduleView({ initialTasks }: Props) {
             )}
           </div>
         </div>
-      </main>
+      </>
+    ) : (
+      /* ── SCHEDULES TAB VIEW (WEEKLY GRID & ROUTINES) ── */
+      <div className="space-y-4">
+        {/* Schedule Toolbar */}
+        <div className="border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-2 sm:p-2.5 rounded-none shadow-none flex flex-row items-center justify-between gap-2 flex-wrap">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="size-3.5 text-zinc-400 dark:text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="Cari mata kuliah, ruangan, atau kegiatan rutin..."
+              value={scheduleSearchQuery}
+              onChange={(e) => setScheduleSearchQuery(e.target.value)}
+              className="w-full h-8 sm:h-9 pl-8 pr-2.5 text-xs sm:text-sm bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 rounded-none focus:outline-none focus:border-indigo-600 shadow-none font-medium"
+            />
+          </div>
 
-      {/* ── Compact Footer ── */}
-      <footer className="border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-4 sm:px-6 py-4 mt-8 text-center text-xs text-zinc-500 dark:text-zinc-400 space-y-1">
-        <p>
-          &copy; {new Date().getFullYear()} Jadwalku • Asisten Tugas Kuliah Personal & Couple
-        </p>
-        <p className="text-[11px] text-zinc-400 dark:text-zinc-600">
-          Ditenagai oleh Gemini Flash AI & WhatsApp Green-API.
-        </p>
-      </footer>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsAddScheduleModalOpen(true)}
+              className="h-8 sm:h-9 px-3 rounded-none border border-indigo-600 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-none shrink-0"
+            >
+              <Plus className="size-3.5" />
+              <span>+ Tambah Jadwal Baru</span>
+            </button>
+          </div>
+        </div>
 
-      {/* ── Add Task Modal ── */}
-      <AddTaskModal
-        isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
-        onTaskCreated={handleTaskCreated}
-      />
-    </div>
+        {/* Info Banner: Weekly WhatsApp Automation & Voice Rescheduling */}
+        <div className="border border-indigo-200 dark:border-indigo-900 bg-indigo-50/60 dark:bg-indigo-950/30 p-3 sm:p-3.5 rounded-none text-xs text-indigo-950 dark:text-indigo-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+          <div className="flex items-start gap-2">
+            <Sparkles className="size-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold text-xs sm:text-sm">
+                Otomatisasi Jadwal Pintar & Rekap Mingguan WhatsApp
+              </p>
+              <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mt-0.5">
+                Jadwal di bawah otomatis direkap ke WhatsApp setiap <strong>Senin 06:30 WITA</strong>. Bisa dipindahkan kapan saja via Voice Note (contoh: <em>&quot;Kuliah Basis Data besok dipindah jam 13:00 di Ruang 402&quot;</em>).
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="px-2 py-1 bg-white dark:bg-zinc-900 border border-indigo-200 dark:border-indigo-800 font-mono text-[10px] font-bold text-indigo-600 dark:text-indigo-400">
+              REKAP: SENIN 06:30 WITA
+            </span>
+          </div>
+        </div>
+
+        {/* Weekly Grid (Senin s/d Minggu) */}
+        <div className="grid gap-3 sm:gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {[
+            { dayIdx: 1, name: "Senin" },
+            { dayIdx: 2, name: "Selasa" },
+            { dayIdx: 3, name: "Rabu" },
+            { dayIdx: 4, name: "Kamis" },
+            { dayIdx: 5, name: "Jumat" },
+            { dayIdx: 6, name: "Sabtu" },
+            { dayIdx: 0, name: "Minggu" },
+          ].map(({ dayIdx, name }) => {
+            const daySchedules = schedules
+              .filter((s) => Array.isArray(s.days) && s.days.includes(dayIdx))
+              .filter((s) => {
+                if (!scheduleSearchQuery.trim()) return true;
+                const q = scheduleSearchQuery.toLowerCase();
+                return (
+                  (s.title || "").toLowerCase().includes(q) ||
+                  (s.location || "").toLowerCase().includes(q) ||
+                  (s.category || "").toLowerCase().includes(q)
+                );
+              })
+              .sort((a, b) => (a.start_time || "").localeCompare(b.start_time || ""));
+
+            return (
+              <div
+                key={dayIdx}
+                className="border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/60 rounded-none shadow-none flex flex-col"
+              >
+                {/* Day Header */}
+                <div className="px-3 py-2 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 flex items-center justify-between">
+                  <span className="font-mono text-xs font-bold text-zinc-900 dark:text-zinc-100 uppercase tracking-wider">
+                    {name}
+                  </span>
+                  <span className="font-mono text-[10px] font-semibold px-1.5 py-0.2 rounded-none bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300">
+                    {daySchedules.length}
+                  </span>
+                </div>
+
+                {/* Day Schedule Cards */}
+                <div className="p-2 space-y-2 flex-1">
+                  {daySchedules.length === 0 ? (
+                    <div className="py-6 text-center text-[11px] font-mono text-zinc-400 dark:text-zinc-600">
+                      Tidak ada jadwal
+                    </div>
+                  ) : (
+                    daySchedules.map((item) => {
+                      const catBadgeClass =
+                        item.category === "kuliah"
+                          ? "bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800"
+                          : item.category === "rutinitas"
+                          ? "bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800"
+                          : "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800";
+
+                      const overridesList = Object.entries(item.overrides || {});
+
+                      return (
+                        <div
+                          key={item.id}
+                          className="p-2.5 border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 rounded-none space-y-2 hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors"
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold uppercase rounded-none border ${catBadgeClass}`}>
+                              {item.category}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSchedule(item.id)}
+                              disabled={deletingScheduleId === item.id}
+                              className="text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 p-0.5 cursor-pointer disabled:opacity-50"
+                              title="Hapus jadwal ini"
+                              aria-label="Hapus jadwal"
+                            >
+                              {deletingScheduleId === item.id ? (
+                                <Loader2 className="size-3 animate-spin" />
+                              ) : (
+                                <Trash2 className="size-3" />
+                              )}
+                            </button>
+                          </div>
+
+                          <div>
+                            <h4 className="text-xs sm:text-sm font-bold text-zinc-900 dark:text-zinc-100 tracking-tight leading-snug">
+                              {item.title}
+                            </h4>
+                          </div>
+
+                          <div className="space-y-1 text-[11px] font-mono text-zinc-600 dark:text-zinc-400 pt-1 border-t border-zinc-200/60 dark:border-zinc-800/60">
+                            <div className="flex items-center gap-1.5 text-zinc-800 dark:text-zinc-200 font-semibold">
+                              <Clock className="size-3 text-zinc-400 shrink-0" />
+                              <span>{item.start_time} - {item.end_time} WITA</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <MapPin className="size-3 text-zinc-400 shrink-0" />
+                              <span className="truncate">{item.location || "Kampus"}</span>
+                            </div>
+                            {item.recurrence && item.recurrence !== "weekly" && (
+                              <div className="flex items-center gap-1 text-[10px] text-zinc-500">
+                                <Repeat className="size-2.5" />
+                                <span>{item.recurrence}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Active Overrides Badge */}
+                          {overridesList.length > 0 && (
+                            <div className="pt-1.5 space-y-1">
+                              {overridesList.map(([dateKey, ov]) => (
+                                <div
+                                  key={dateKey}
+                                  className="p-1.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-none text-[10px] text-amber-900 dark:text-amber-300 space-y-0.5 font-mono"
+                                >
+                                  <div className="font-bold flex items-center gap-1">
+                                    <span>⚠️ Jadwal Pengganti ({ov.date}):</span>
+                                  </div>
+                                  <div>
+                                    ⏰ {ov.start_time || item.start_time} {ov.end_time ? `- ${ov.end_time}` : ""} WITA
+                                  </div>
+                                  <div>📍 {ov.location || item.location}</div>
+                                  {ov.note && <div className="italic text-zinc-500">{ov.note}</div>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    )}
+  </main>
+
+  {/* ── Compact Footer ── */}
+  <footer className="border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-4 sm:px-6 py-4 mt-8 text-center text-xs text-zinc-500 dark:text-zinc-400 space-y-1">
+    <p>
+      &copy; {new Date().getFullYear()} Jadwalku • Asisten Tugas Kuliah Personal & Couple
+    </p>
+    <p className="text-[11px] text-zinc-400 dark:text-zinc-600">
+      Ditenagai oleh Gemini Flash AI & WhatsApp Green-API.
+    </p>
+  </footer>
+
+  {/* ── Add Task Modal ── */}
+  <AddTaskModal
+    isOpen={isAddModalOpen}
+    onClose={() => setIsAddModalOpen(false)}
+    onTaskCreated={handleTaskCreated}
+  />
+
+  {/* ── Add Schedule Modal ── */}
+  <AddScheduleModal
+    isOpen={isAddScheduleModalOpen}
+    onClose={() => setIsAddScheduleModalOpen(false)}
+    onScheduleCreated={handleScheduleCreated}
+  />
+</div>
   );
 }

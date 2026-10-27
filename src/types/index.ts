@@ -64,3 +64,64 @@ export interface NormalizedIncomingWhatsAppMessage {
   messageType?: string;
   extension?: string;
 }
+
+// ============================================================================
+// MODUL JADWAL RUTIN KULIAH & RUTINITAS (RECURRING SCHEDULES)
+// ============================================================================
+export type ScheduleCategory = "kuliah" | "personal" | "rutinitas";
+export type ScheduleRecurrence = "weekly" | "biweekly" | "custom";
+
+export interface ScheduleOverride {
+  date: string; // Format YYYY-MM-DD
+  start_time?: string;
+  end_time?: string;
+  location?: string;
+  note?: string;
+}
+
+export interface RecurringSchedule {
+  id: string;
+  title: string;
+  category: ScheduleCategory;
+  days: number[]; // 0 = Minggu, 1 = Senin, 2 = Selasa, 3 = Rabu, 4 = Kamis, 5 = Jumat, 6 = Sabtu
+  start_time: string; // Format "HH:mm"
+  end_time: string; // Format "HH:mm"
+  location: string;
+  recurrence: ScheduleRecurrence;
+  overrides?: Record<string, ScheduleOverride>;
+  created_at?: unknown;
+  updated_at?: unknown;
+  created_by?: string;
+}
+
+// Multi-Intent AI Extractor Types
+export type AiIntentType = "TASK_CREATE" | "SCHEDULE_CREATE" | "SCHEDULE_OVERRIDE";
+
+export interface ExtractedSchedule {
+  title: string;
+  category?: ScheduleCategory;
+  days: number[];
+  start_time: string;
+  end_time: string;
+  location: string;
+  recurrence: ScheduleRecurrence;
+  notes?: string;
+}
+
+export interface ExtractedScheduleOverride {
+  target_title: string;
+  target_date: string; // YYYY-MM-DD
+  new_start_time?: string;
+  new_end_time?: string;
+  new_location?: string;
+  note?: string;
+}
+
+export interface AiExtractionResult {
+  intent: AiIntentType;
+  task?: ExtractedTask;
+  schedule?: ExtractedSchedule;
+  override?: ExtractedScheduleOverride;
+  error?: string;
+}
+

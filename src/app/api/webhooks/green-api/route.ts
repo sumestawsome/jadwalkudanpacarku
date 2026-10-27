@@ -4,15 +4,22 @@ import { getAdminDb, FieldValue } from "@/lib/server/firebase-admin";
 import { sendGreenApiTextMessage } from "@/lib/server/green-api";
 import { isAuthorizedChat, getAuthorizedSenderType } from "@/lib/server/auth-check";
 import {
+  extractIntentFromAudio,
+  extractIntentFromText,
   extractTaskFromVoiceNote,
   extractTaskFromText,
   saveTaskToFirestore,
+  saveScheduleToFirestore,
+  applyScheduleOverrideToFirestore,
   buildFriendlyTaskConfirmationMessage,
+  buildScheduleConfirmationMessage,
+  buildScheduleOverrideAnnouncementMessage,
   isBotSelfEchoMessage,
 } from "@/lib/server/ai-extractor";
+import { checkAndSendWeeklyScheduleRecap } from "@/lib/server/cron-reminders";
 import { getTaskDeadlineDiffDays } from "@/lib/task-risk";
 import { formatIndonesianDate, formatWitaDate, parseDeadlineString } from "@/lib/date-utils";
-import type { Task } from "@/types";
+import type { Task, RecurringSchedule } from "@/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -209,21 +216,59 @@ export async function POST(request: NextRequest) {
       }
 
       const buffer = Buffer.from(await audioRes.arrayBuffer());
-      const extracted = await extractTaskFromVoiceNote(buffer, mimeType || "audio/ogg");
+      const result = await extractIntentFromAudio(buffer, mimeType || "audio/ogg");
 
-      if (!extracted || !extracted.title) {
-        await sendGreenApiTextMessage(
-          rawChatId,
-          "Suaramu sudah terdengar jelas, tapi bot belum bisa menangkap detail tugas kuliahnya nih. Coba sebutkan mata kuliah dan deadline-nya lagi ya! ✨"
-        );
-        return NextResponse.json({ status: "voice_no_task_detected" }, { status: 200 });
+      if (result.intent === "SCHEDULE_CREATE" && result.schedule) {
+        const savedSchedule = await saveScheduleToFirestore(result.schedule, senderInfo);
+        const confirmMsg = buildScheduleConfirmationMessage(savedSchedule, senderType, senderName);
+        await sendGreenApiTextMessage(rawChatId, confirmMsg);
+        return NextResponse.json({
+          status: "success",
+          action: "schedule_created",
+          scheduleId: savedSchedule.id,
+        }, { status: 200 });
       }
 
-      const savedTask = await saveTaskToFirestore(extracted, "[Pesan Suara / Voice Note]", senderInfo);
-      const confirmMsg = buildFriendlyTaskConfirmationMessage(savedTask, senderType, senderName);
+      if (result.intent === "SCHEDULE_OVERRIDE" && result.override) {
+        const overrideRes = await applyScheduleOverrideToFirestore(result.override);
+        if (overrideRes) {
+          const announceMsg = buildScheduleOverrideAnnouncementMessage(
+            overrideRes.schedule.title,
+            overrideRes.override,
+            overrideRes.schedule
+          );
+          await sendGreenApiTextMessage(rawChatId, announceMsg);
 
-      await sendGreenApiTextMessage(rawChatId, confirmMsg);
-      return NextResponse.json({ status: "success", taskId: savedTask.id }, { status: 200 });
+          const coupleGroup = process.env.WHATSAPP_COUPLE_GROUP_ID?.trim();
+          const targetGroupChatId = coupleGroup ? (coupleGroup.endsWith("@g.us") ? coupleGroup : `${coupleGroup}@g.us`) : null;
+          if (targetGroupChatId && targetGroupChatId !== rawChatId) {
+            await sendGreenApiTextMessage(targetGroupChatId, announceMsg).catch(() => {});
+          }
+
+          return NextResponse.json({
+            status: "success",
+            action: "schedule_overridden",
+            scheduleId: overrideRes.schedule.id,
+          }, { status: 200 });
+        }
+      }
+
+      if (result.intent === "TASK_CREATE" && result.task && result.task.title) {
+        const savedTask = await saveTaskToFirestore(result.task, "[Pesan Suara / Voice Note]", senderInfo);
+        const confirmMsg = buildFriendlyTaskConfirmationMessage(savedTask, senderType, senderName);
+        await sendGreenApiTextMessage(rawChatId, confirmMsg);
+        return NextResponse.json({
+          status: "success",
+          action: "task_created",
+          taskId: savedTask.id,
+        }, { status: 200 });
+      }
+
+      await sendGreenApiTextMessage(
+        rawChatId,
+        "Suaramu sudah terdengar jelas, tapi bot belum bisa menangkap detail tugas atau jadwalnya nih. Coba sebutkan kegiatan, mata kuliah, atau deadline-nya lebih jelas ya! ✨"
+      );
+      return NextResponse.json({ status: "voice_no_actionable_intent" }, { status: 200 });
     } catch (audioErr) {
       console.error("[jadwalku-webhook] Voice note handling error:", audioErr);
       await sendGreenApiTextMessage(
@@ -359,18 +404,23 @@ export async function POST(request: NextRequest) {
     const helpMsg = [
       "✨ *Halo! Ini Bot Asisten Jadwalku* 📚",
       "",
-      "Aku siap bantuin kamu mencatat dan mengingatkan tugas kuliah secara otomatis:",
+      "Aku siap bantuin kamu mencatat dan mengingatkan tugas kuliah serta jadwal rutin secara otomatis:",
       "",
       "🎙️ *Kirim Voice Note:*",
-      "Tinggal rekam suara kamu, sebutkan mata kuliah, tugasnya apa, dan kapan deadline-nya. Bot akan langsung mencatatnya ke jadwal!",
+      "• Catat tugas: Sebutkan mata kuliah, tugasnya apa, dan deadline-nya.",
+      "• Jadwal rutin: Sebutkan hari, jam, mata kuliah, dan ruangannya.",
+      "• Pindah jadwal: Sebutkan nama matkul, tanggal pemindahan, dan jam/ruangan barunya.",
       "",
       "✍️ *Kirim Teks Langsung:*",
-      "Ketik detail tugas dengan santai, misal:",
+      "Ketik detail dengan santai, misal:",
       '_`Tugas Basis Data buat ERD deadline kamis depan jam 23:59 ya`_',
+      '_`Kuliah Basis Data besok dipindah ke jam 13:00 di Ruang 402`_',
       "",
       "📌 *Perintah Cepat:*",
       "• `!jadwal` atau `!tugas` : Cek daftar tugas yang belum selesai",
-      "• `!deadline <waktu>` : Koreksi tenggat tugas terakhir (contoh: `!deadline besok jam 8 malam`)",
+      "• `!rutin` : Cek daftar jadwal rutin kuliah per minggu",
+      "• `!rekap` : Kirimkan rekap jadwal kuliah minggu ini",
+      "• `!deadline <waktu>` : Koreksi tenggat tugas terakhir",
       "• `!bantuan` : Tampilkan petunjuk ini",
       "",
       "💻 Akses kalender lengkap & riwayat di Web Jadwalku!",
@@ -378,6 +428,59 @@ export async function POST(request: NextRequest) {
 
     await sendGreenApiTextMessage(rawChatId, helpMsg);
     return NextResponse.json({ status: "success", action: "help_sent" }, { status: 200 });
+  }
+
+  // Perintah kirim rekap jadwal kuliah minggu ini: !rekap
+  if (lowerText === "!rekap" || lowerText === "!rekapjadwal") {
+    try {
+      const sent = await checkAndSendWeeklyScheduleRecap(true);
+      if (sent) {
+        return NextResponse.json({ status: "success", action: "weekly_recap_broadcasted" }, { status: 200 });
+      } else {
+        await sendGreenApiTextMessage(rawChatId, "ℹ️ Belum ada jadwal rutin kuliah yang tersimpan di sistem Jadwalku.");
+        return NextResponse.json({ status: "success", action: "recap_empty" }, { status: 200 });
+      }
+    } catch (err) {
+      console.error("[jadwalku-webhook] Failed to broadcast weekly recap:", err);
+      await sendGreenApiTextMessage(rawChatId, "⚠️ Terjadi kesalahan saat membuat rekap jadwal mingguan.");
+      return NextResponse.json({ status: "error", error: String(err) }, { status: 200 });
+    }
+  }
+
+  // Perintah daftar jadwal rutin: !rutin
+  if (lowerText === "!rutin" || lowerText === "!jadwalrutin") {
+    try {
+      const db = getAdminDb();
+      const schedSnap = await db.collection("jadwalku_schedules").get();
+      if (schedSnap.empty) {
+        await sendGreenApiTextMessage(rawChatId, "🗓️ Belum ada jadwal kuliah atau rutinitas yang terdaftar. Tambahkan via web atau voice note ya! ✨");
+        return NextResponse.json({ status: "success", count: 0 }, { status: 200 });
+      }
+
+      const dayNames = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+      const lines = [
+        "🗓️ *DAFTAR JADWAL KULIAH & RUTINITAS BERULANG* ⏰",
+        "",
+      ];
+
+      schedSnap.docs.forEach((doc, idx) => {
+        const s = doc.data() as RecurringSchedule;
+        const daysText = (s.days || []).map((d) => dayNames[d] || `Hari ${d}`).join(", ");
+        lines.push(`${idx + 1}. *${s.title}* (${s.start_time} - ${s.end_time} WITA)`);
+        lines.push(`   📅 Hari: Setiap ${daysText}`);
+        lines.push(`   📍 Ruangan/Lokasi: ${s.location || "Kampus"}`);
+        lines.push("");
+      });
+
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://jadwalku.vercel.app";
+      lines.push(`👉 Kelola jadwal di web: ${appUrl}`);
+      await sendGreenApiTextMessage(rawChatId, lines.join("\n"));
+      return NextResponse.json({ status: "success", count: schedSnap.size }, { status: 200 });
+    } catch (err) {
+      console.error("[jadwalku-webhook] Failed to list recurring schedules:", err);
+      await sendGreenApiTextMessage(rawChatId, "⚠️ Maaf, gagal memuat daftar jadwal rutin saat ini.");
+      return NextResponse.json({ status: "error", error: String(err) }, { status: 200 });
+    }
   }
 
   if (lowerText === "!jadwal" || lowerText === "!tugas" || lowerText === "!list") {
@@ -446,41 +549,80 @@ export async function POST(request: NextRequest) {
     } catch (listErr) {
       console.error("[jadwalku-webhook] Failed to list tasks:", listErr);
       await sendGreenApiTextMessage(rawChatId, "⚠️ Maaf, gagal memuat daftar tugas saat ini.");
-      return NextResponse.json({ status: "error" }, { status: 200 });
+      return NextResponse.json({ status: "error", error: String(listErr) }, { status: 200 });
     }
   }
 
-  // 3. Tangani Pesan Teks Bebas (Deteksi Tugas AI)
+  // 3. Tangani Pesan Teks Bebas (Deteksi Multi-Intent AI: Tugas, Jadwal Rutin, Pindah Jadwal)
   if (textMessage) {
     if (textMessage.length < 5) {
       return NextResponse.json({ status: "ignored_short_text" }, { status: 200 });
     }
 
     try {
-      console.log(`[jadwalku-webhook] Analyzing text for tasks from ${rawChatId}: "${textMessage.slice(0, 50)}..."`);
-      const extracted = await extractTaskFromText(textMessage);
+      console.log(`[jadwalku-webhook] Analyzing text with AI from ${rawChatId}: "${textMessage.slice(0, 50)}..."`);
+      const result = await extractIntentFromText(textMessage);
 
-      if (extracted && extracted.title && extracted.title.length > 2) {
-        const savedTask = await saveTaskToFirestore(extracted, textMessage, senderInfo);
+      if (result.intent === "SCHEDULE_CREATE" && result.schedule) {
+        const savedSchedule = await saveScheduleToFirestore(result.schedule, senderInfo);
+        const confirmMsg = buildScheduleConfirmationMessage(savedSchedule, senderType, senderName);
+        await sendGreenApiTextMessage(rawChatId, confirmMsg);
+        return NextResponse.json({
+          status: "success",
+          action: "schedule_created",
+          scheduleId: savedSchedule.id,
+        }, { status: 200 });
+      }
+
+      if (result.intent === "SCHEDULE_OVERRIDE" && result.override) {
+        const overrideRes = await applyScheduleOverrideToFirestore(result.override);
+        if (overrideRes) {
+          const announceMsg = buildScheduleOverrideAnnouncementMessage(
+            overrideRes.schedule.title,
+            overrideRes.override,
+            overrideRes.schedule
+          );
+          await sendGreenApiTextMessage(rawChatId, announceMsg);
+
+          const coupleGroup = process.env.WHATSAPP_COUPLE_GROUP_ID?.trim();
+          const targetGroupChatId = coupleGroup ? (coupleGroup.endsWith("@g.us") ? coupleGroup : `${coupleGroup}@g.us`) : null;
+          if (targetGroupChatId && targetGroupChatId !== rawChatId) {
+            await sendGreenApiTextMessage(targetGroupChatId, announceMsg).catch(() => {});
+          }
+
+          return NextResponse.json({
+            status: "success",
+            action: "schedule_overridden",
+            scheduleId: overrideRes.schedule.id,
+          }, { status: 200 });
+        }
+      }
+
+      if (result.intent === "TASK_CREATE" && result.task && result.task.title && result.task.title.length > 2) {
+        const savedTask = await saveTaskToFirestore(result.task, textMessage, senderInfo);
         const confirmMsg = buildFriendlyTaskConfirmationMessage(savedTask, senderType, senderName);
 
         await sendGreenApiTextMessage(rawChatId, confirmMsg);
-        return NextResponse.json({ status: "success", taskId: savedTask.id }, { status: 200 });
+        return NextResponse.json({
+          status: "success",
+          action: "task_created",
+          taskId: savedTask.id,
+        }, { status: 200 });
       }
 
-      const triggerWords = ["tugas", "deadline", "kumpul", "kuliah", "pr", "latihan", "makalah", "proyek", "resum"];
+      const triggerWords = ["tugas", "deadline", "kumpul", "kuliah", "pr", "latihan", "makalah", "proyek", "resum", "jadwal", "pindah"];
       const containsTrigger = triggerWords.some((w) => lowerText.includes(w));
 
       if (!isGroup && containsTrigger) {
         await sendGreenApiTextMessage(
           rawChatId,
-          "Kamu sepertinya mau nyatet tugas ya? 🤔\nBoleh ditulis lebih jelas dengan nama mata kuliah dan perkiraan tanggal/jam deadline-nya, atau langsung kirim pesan suara ya! ✨"
+          "Kamu sepertinya mau nyatet tugas atau jadwal ya? 🤔\nBoleh ditulis lebih jelas dengan nama mata kuliah dan perkiraan hari/jam, atau langsung kirim pesan suara ya! ✨"
         );
       }
 
-      return NextResponse.json({ status: "no_task_detected" }, { status: 200 });
+      return NextResponse.json({ status: "no_actionable_intent" }, { status: 200 });
     } catch (textErr) {
-      console.error("[jadwalku-webhook] Text task extraction error:", textErr);
+      console.error("[jadwalku-webhook] Text intent extraction error:", textErr);
       return NextResponse.json({ status: "error", error: String(textErr) }, { status: 200 });
     }
   }
