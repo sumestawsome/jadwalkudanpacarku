@@ -30,19 +30,45 @@ export async function fetchWithTimeout(
   }
 }
 
-const SYSTEM_PROMPT = "Kamu adalah asisten pintar pencatat jadwal & tugas kuliah personal/couple untuk Jadwalku.\n" +
-"Tugasmu adalah mendengarkan rekaman suara atau membaca teks dan mengekstrak rincian tugas kuliah ke format JSON murni.\n" +
-"Tahun dasar saat ini adalah 2026.\n\n" +
-"Format JSON WAJIB:\n" +
-"{\n" +
-'  "course_name": "Nama mata kuliah yang disebutkan (contoh: Basis Data, Matematika Diskrit, atau Umum)",\n' +
-'  "title": "Judul spesifik tugas kuliah (contoh: Latihan Soal Halaman 45, Makalah Arsitektur Cloud)",\n' +
-'  "deadline": "Format YYYY-MM-DD HH:mm (WITA) jika tanggal/waktu disebutkan. Jika hanya tanggal, set jam ke 23:59. Jika tidak disebutkan, isi null.",\n' +
-'  "description": "Instruksi khusus atau catatan yang disebutkan (default: kosong)",\n' +
-'  "submission_url": "Tempat pengumpulan yang disebutkan (default: E-Learning)"\n' +
-"}\n\n" +
-"Jika input tidak berisi informasi tugas kuliah sama sekali, kembalikan:\n" +
-'{\n  "error": "not_a_task"\n}';
+export function getDynamicSystemPrompt(): string {
+  const currentWita = formatWitaDate(new Date());
+  return [
+    "Kamu adalah asisten pintar pencatat jadwal & tugas kuliah personal/couple untuk Jadwalku.",
+    "Tugasmu adalah mendengarkan rekaman suara atau membaca teks dan mengekstrak rincian tugas kuliah ke format JSON murni.",
+    `Waktu referensi saat ini adalah: ${currentWita} (Tahun 2026, WITA).`,
+    "",
+    "ATURAN PERHITUNGAN DEADLINE / TANGGAL:",
+    "- Jadikan waktu referensi di atas sebagai patokan dasar tanggal, hari, dan jam.",
+    "- Jika pengguna menyebut 'besok', hitung persis H+1 dari tanggal referensi.",
+    "- Jika pengguna menyebut 'lusa', hitung persis H+2 dari tanggal referensi.",
+    "- Jika menyebut nama hari (misal 'hari Jumat ini', 'Senin depan'), hitung tanggal hari tersebut relatif terhadap waktu referensi saat ini.",
+    "- Jika menyebut jam informal (contoh: 'jam 7 malam', 'jam 19.00', 'pukul 2 siang', 'jam 8 pagi'):",
+    "  * 'malam' (contoh: 'jam 7 malam' -> 19:00, 'jam 8 malam' -> 20:00, 'jam 11 malam' -> 23:00 WITA)",
+    "  * 'siang/sore' (contoh: 'jam 1 siang' -> 13:00, 'jam 2 siang' -> 14:00, 'jam 4 sore' -> 16:00, 'jam 5 sore' -> 17:00 WITA)",
+    "  * 'pagi' (contoh: 'jam 8 pagi' -> 08:00, 'jam 10 pagi' -> 10:00 WITA)",
+    "- Jika pengguna hanya menyebut tanggal atau hari tanpa jam spesifik, tetapkan jam default ke 23:59 (WITA).",
+    "- Format deadline WAJIB: YYYY-MM-DD HH:mm (WITA). Jika sama sekali tidak ada informasi tanggal/waktu, isi null.",
+    "",
+    "ATURAN TEMPAT PENGUMPULAN / LMS:",
+    "- Tangkap tempat kumpul/pengumpulan secara fleksibel jika disebutkan (contoh: 'Google Drive', 'Email', 'WhatsApp', 'E-Learning', 'Hardcopy/Kertas', tautan link/URL, 'Moodle', 'Classroom', dll).",
+    "- JANGAN langsung default ke 'E-Learning' jika ada tempat pengumpulan lain yang disebut atau diisyaratkan oleh pengguna.",
+    "- Hanya gunakan 'E-Learning' jika pengguna sama sekali tidak menyebutkan atau menyinggung tempat pengumpulan.",
+    "",
+    "FORMAT JSON WAJIB (HANYA JSON MURNI TANPA MARKDOWN / TEKS LAIN):",
+    "{",
+    '  "course_name": "Nama mata kuliah yang disebutkan (contoh: Basis Data, Matematika Diskrit, atau Umum jika tidak disebut)",',
+    '  "title": "Judul spesifik tugas kuliah (contoh: Latihan Soal Halaman 45, Makalah Arsitektur Cloud)",',
+    '  "deadline": "Format YYYY-MM-DD HH:mm (WITA) jika tanggal/waktu disebutkan. Jika tidak disebutkan, isi null.",',
+    '  "description": "Instruksi khusus, rincian materi, atau catatan yang disebutkan (kosong jika tidak ada)",',
+    '  "submission_url": "Tempat pengumpulan yang disebutkan (contoh: Google Drive, Email, E-Learning, Hardcopy/Kertas, dll)"',
+    "}",
+    "",
+    "Jika input tidak berisi informasi tugas kuliah sama sekali, kembalikan:",
+    '{\n  "error": "not_a_task"\n}',
+  ].join("\n");
+}
+
+export const SYSTEM_PROMPT = getDynamicSystemPrompt();
 
 export function isBotSelfEchoMessage(text: string): boolean {
   if (!text) return false;
@@ -73,6 +99,7 @@ export async function extractTaskFromVoiceNote(
 
   let rawJsonText = "";
   let lastError: Error | null = null;
+  const systemPrompt = getDynamicSystemPrompt();
 
   for (const model of uniqueModels) {
     try {
@@ -84,7 +111,7 @@ export async function extractTaskFromVoiceNote(
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            system_instruction: { parts: [{ text: systemPrompt }] },
             contents: [
               {
                 role: "user",
@@ -139,6 +166,7 @@ export async function extractTaskFromText(text: string): Promise<ExtractedTask> 
   const uniqueModels = [...new Set(SUPPORTED_GEMINI_MODELS)];
   let rawJsonText = "";
   let lastError: Error | null = null;
+  const systemPrompt = getDynamicSystemPrompt();
 
   for (const model of uniqueModels) {
     try {
@@ -150,7 +178,7 @@ export async function extractTaskFromText(text: string): Promise<ExtractedTask> 
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            system_instruction: { parts: [{ text: systemPrompt }] },
             contents: [
               {
                 role: "user",

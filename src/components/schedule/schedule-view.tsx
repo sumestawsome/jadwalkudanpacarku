@@ -25,7 +25,9 @@ import {
   MessageSquare,
   Sparkles,
   BookOpen,
+  Plus,
 } from "lucide-react";
+import { AddTaskModal } from "@/components/schedule/add-task-modal";
 
 type Props = {
   initialTasks: Task[];
@@ -60,8 +62,15 @@ export function ScheduleView({ initialTasks }: Props) {
   const [onlyUrgent, setOnlyUrgent] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
 
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [mobileTab, setMobileTab] = useState<"tasks" | "calendar">("tasks");
+
   const { theme, toggleTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
+
+  const handleTaskCreated = (newTask: Task) => {
+    setTasks((prev) => [newTask, ...prev]);
+  };
 
   useEffect(() => {
     setMounted(true);
@@ -188,8 +197,19 @@ export function ScheduleView({ initialTasks }: Props) {
             </div>
           </div>
 
-          {/* Right: Counter Badge + Refresh + Theme Toggle */}
+          {/* Right: + Tambah Tugas + Counter Badge + Refresh + Theme Toggle */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsAddModalOpen(true)}
+              className="h-8 px-2.5 sm:px-3 rounded-none border border-indigo-600 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-none shrink-0"
+              title="Tambah tugas baru secara manual atau rekam suara"
+            >
+              <Plus className="size-3.5" />
+              <span className="hidden sm:inline">Tambah Tugas</span>
+              <span className="sm:hidden">Tambah</span>
+            </button>
+
             <div className="px-2 sm:px-2.5 py-1 rounded-none border border-amber-500/40 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 text-amber-800 dark:text-amber-400 font-mono text-[11px] sm:text-xs font-bold flex items-center gap-1.5 shadow-none">
               <span className="size-1.5 rounded-none bg-amber-500 dark:bg-amber-400" />
               <span>
@@ -306,10 +326,42 @@ export function ScheduleView({ initialTasks }: Props) {
           </div>
         )}
 
+        {/* ── Mobile Navigation Tabs (visible on < lg) ── */}
+        <div className="flex lg:hidden border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-1 rounded-none gap-1">
+          <button
+            type="button"
+            onClick={() => setMobileTab("tasks")}
+            className={`flex-1 py-2 text-xs font-bold rounded-none flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+              mobileTab === "tasks"
+                ? "bg-indigo-600 text-white"
+                : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            }`}
+          >
+            <BookOpen className="size-3.5" />
+            <span>Daftar Tugas ({filteredTasks.length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileTab("calendar")}
+            className={`flex-1 py-2 text-xs font-bold rounded-none flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+              mobileTab === "calendar"
+                ? "bg-indigo-600 text-white"
+                : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            }`}
+          >
+            <CalendarIcon className="size-3.5" />
+            <span>Kalender Bulanan</span>
+          </button>
+        </div>
+
         {/* ── Content Grid: Left Calendar + Right Tasks List ── */}
         <div className="grid gap-4 sm:gap-6 lg:grid-cols-12">
           {/* ── Left Column: Calendar + WhatsApp Quick Info (5 cols) ── */}
-          <div className="lg:col-span-5 space-y-3 sm:space-y-4">
+          <div
+            className={`space-y-3 sm:space-y-4 lg:col-span-5 lg:order-1 ${
+              mobileTab === "calendar" ? "block" : "hidden lg:block"
+            }`}
+          >
             <div className="border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/60 p-3.5 sm:p-4 rounded-none shadow-none space-y-3">
               {/* Calendar Header */}
               <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-2.5">
@@ -476,10 +528,43 @@ export function ScheduleView({ initialTasks }: Props) {
                 <div>• <code className="text-indigo-600 dark:text-indigo-400 font-bold">!bantuan</code> : Panduan lengkap</div>
               </div>
             </div>
+
+            {selectedDate && (
+              <div className="lg:hidden p-2.5 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 flex items-center justify-between">
+                <span className="text-xs font-medium text-indigo-950 dark:text-indigo-200">
+                  {filteredTasks.length} tugas pada tanggal terpilih
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setMobileTab("tasks")}
+                  className="text-xs font-bold text-indigo-600 dark:text-indigo-400 underline cursor-pointer"
+                >
+                  Lihat Daftar Tugas &rarr;
+                </button>
+              </div>
+            )}
           </div>
 
           {/* ── Right Column: Task Cards (7 cols) ── */}
-          <div className="lg:col-span-7 space-y-3 sm:space-y-4">
+          <div
+            className={`space-y-3 sm:space-y-4 lg:col-span-7 lg:order-2 ${
+              mobileTab === "tasks" ? "block" : "hidden lg:block"
+            }`}
+          >
+            {/* Quick Mobile Accordion Toggle to Calendar */}
+            <div className="lg:hidden pb-1">
+              <button
+                type="button"
+                onClick={() => setMobileTab("calendar")}
+                className="w-full py-1.5 px-2.5 text-xs font-semibold rounded-none border border-dashed border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:text-indigo-600 flex items-center justify-between cursor-pointer shadow-none"
+              >
+                <span className="flex items-center gap-1.5">
+                  <CalendarIcon className="size-3.5 text-indigo-600 dark:text-indigo-400" />
+                  <span>Buka Kalender Bulanan</span>
+                </span>
+                <span className="text-[10px] font-mono text-zinc-400">&rarr;</span>
+              </button>
+            </div>
             <div className="flex items-center justify-between pb-0.5">
               <h2 className="text-sm sm:text-base font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
                 <span>{showArchived ? "Daftar Riwayat & Arsip" : "Daftar Tugas Kuliah"}</span>
@@ -676,6 +761,13 @@ export function ScheduleView({ initialTasks }: Props) {
           Ditenagai oleh Gemini Flash AI & WhatsApp Green-API.
         </p>
       </footer>
+
+      {/* ── Add Task Modal ── */}
+      <AddTaskModal
+        isOpen={isAddModalOpen}
+        onClose={() => setIsAddModalOpen(false)}
+        onTaskCreated={handleTaskCreated}
+      />
     </div>
   );
 }

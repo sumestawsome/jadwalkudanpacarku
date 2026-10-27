@@ -66,21 +66,22 @@ export function parseDeadlineString(raw?: string | null): Date | null {
   if (!raw || !raw.trim()) return null;
   const clean = raw.trim();
 
-  // Try direct parse
-  const direct = new Date(clean);
-  if (!isNaN(direct.getTime())) {
-    return direct;
-  }
-
-  // Matches YYYY-MM-DD or YYYY-MM-DD HH:mm
-  const m = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2}))?/);
+  // Matches YYYY-MM-DD or YYYY-MM-DD HH:mm (treated explicitly as WITA / UTC+8)
+  const m = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2}))?$/);
   if (m) {
     const year = parseInt(m[1], 10);
     const month = parseInt(m[2], 10) - 1;
     const day = parseInt(m[3], 10);
-    const hour = m[4] ? parseInt(m[4], 10) : 23;
-    const min = m[5] ? parseInt(m[5], 10) : 59;
-    return new Date(year, month, day, hour, min, 0);
+    const hour = m[4] !== undefined ? parseInt(m[4], 10) : 23;
+    const min = m[5] !== undefined ? parseInt(m[5], 10) : 59;
+    // WITA is UTC+8, so UTC hour = hour - 8
+    return new Date(Date.UTC(year, month, day, hour - 8, min, 0));
+  }
+
+  // Fallback direct parse for ISO strings with explicit timezone offsets
+  const direct = new Date(clean);
+  if (!isNaN(direct.getTime())) {
+    return direct;
   }
 
   return null;
